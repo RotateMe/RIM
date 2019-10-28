@@ -1,4 +1,6 @@
-# Non Linear Microstructures
+# Reduced Immersed Method
+
+This is a basic implementation of [*The Reduced Immersed Method for Real-Time Fluid-Elastic Solid Interaction and Contact Simulation*](https://graphics.tudelft.nl/~klaus/papers/immersed.pdf).
 
 ## Prerequisites
 We currently only provide a setup to build the code on Windows, in particular using Visual Studio 2015, 2017 or 2019.
@@ -6,12 +8,12 @@ CUDA is required and should be installed prior to following the build instructio
 
 ## Build
 Unpack the files and run **premake-vs201X.bat** to generate a solution for Visual Studio 201X in a subdirectory **build**.
-Open **build/Demo.sln** and build the solution. Run the project **Demo** to start the simulation.
+Open **build/Demo.sln** and build the solution. Run the project **demo** to start the simulation.
 
 ## The simulation
 *Note that the simulation requires preprocessing, so there will be a ~10 second delay before the simulation starts.*
 The simulation should run at least at 60FPS on a wide range of CPUs and GPUs.
-If your framerate is low there is likely to be an issue related to OpenMP, CUDA options, or compilation options.
+If your framerate is significantly lower than this, there is likely to be an issue related to OpenMP, CUDA options, or compilation options.
 
 In the simulation, the user can click and drag on the mesh to add position constraints for mesh vertices.
 The camera can be moved using WASD (as in a first person game) and Q/E to move up and down.
