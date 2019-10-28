@@ -1,0 +1,45 @@
+#version 450
+
+#define TILE_WIDTH 16
+#define TILE_HEIGHT 16
+
+#include "../environment.glsl" 
+
+layout( local_size_x = TILE_WIDTH, local_size_y = TILE_HEIGHT ) in;
+
+uniform samplerCube InputCube;           // Input cubemap texture
+uniform int  InputMipmap = 0;
+
+layout (binding=1) writeonly uniform imageCube OutputCube; // Output cubemap texture 
+
+// Note : When binding a texture as an image(Cube), only 1, 2 or 4 channel textures may be used. 
+//        Check documentation on possible formats.
+
+int  InputSize;                  // Size of input cubemap
+int  OutputSize;                 // Size of output of prefiltered radiance for this mipmap level
+
+void main()
+{
+
+	InputSize = textureSize(InputCube, InputMipmap).x;
+	OutputSize = imageSize(OutputCube).x;
+
+	ivec2 icoord = ivec2( gl_GlobalInvocationID );
+	
+	if (icoord.x >= OutputSize || icoord.y >= OutputSize) return;
+
+	for (int cubeFace = 0; cubeFace < 6; ++cubeFace) {
+
+		vec4 result = vec4(0.0);
+
+		vec2 texCoord = (icoord+0.5) / OutputSize;
+
+		vec3 envDir = mapCubeTexCoordToView(texCoord, cubeFace);
+		
+		result = textureLod(InputCube, envDir, InputMipmap);
+
+		imageStore(OutputCube, ivec3(icoord, cubeFace), result);
+	
+	}
+
+}

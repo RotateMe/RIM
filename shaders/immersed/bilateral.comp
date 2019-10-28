@@ -1,0 +1,152 @@
+#version 430 core
+#extension GL_ARB_compute_shader : require
+
+#define TILE_WIDTH 16
+#define TILE_HEIGHT 16
+
+#include "../Reusable/depth_to_geometry.glsl" 
+
+#ifdef GL_ARB_compute_variable_group_size
+#extension GL_ARB_compute_variable_group_size : enable
+	layout( local_size_variable ) in;
+#else
+	#define TILE_WIDTH 16
+	#define TILE_HEIGHT 16
+	layout( local_size_x = TILE_WIDTH, local_size_y = TILE_HEIGHT ) in;
+#endif
+
+layout (binding=0) writeonly uniform image2D OutputTex; // Output values
+
+uniform sampler2D   inputTex;       // Texture used for mixing
+uniform sampler2D   comparePosTex;  // Position texture used for weighting
+uniform sampler2D   compareNorTex;  // Normal   texture used for weighting
+
+uniform float  distMaxPos   = 1.0;
+uniform float  distMaxNor   = 1.0;
+uniform int    kernelSize = 4;
+uniform int    iteration  = 0;
+
+uniform bool normalFiltering = false;
+
+const bool  normalDotComparison = false; 
+const bool  weighting = true;
+
+vec4 getFilteredValueBilateral(const ivec2 centerPx)
+{
+	const ivec2 tSize    = textureSize(inputTex, 0);
+	const int filterStep = (iteration==0) ? 3 : 1;
+
+	vec4 centerPos = texelFetch( comparePosTex, centerPx, 0).xyzw;
+	vec4  accum    = texelFetch( inputTex,   centerPx, 0).xyzw;
+
+	if (accum.w == 0.0) return vec4(0.0); 
+
+	float weight = (accum.w == 0.0 || !weighting ? 1.0 : accum.w);
+	accum *= weight;
+
+	for( int j = -kernelSize; j <= kernelSize; j++ ) {
+		for( int i = -kernelSize; i <= kernelSize; i++ ) {
+
+			if(i == 0 && j == 0) continue;
+
+			const ivec2 samplePx = centerPx + filterStep * ivec2(i,j);
+
+			if( any(lessThan(samplePx,ivec2(0))) || any(greaterThan(samplePx,tSize-1)) ) continue;
+
+			const vec4 comparePos = texelFetch( comparePosTex, samplePx, 0 ).xyzw;
+
+		
+			if( comparePos.w == 1.0 )
+			{
+				const vec4 inputVal = texelFetch( inputTex, samplePx, 0 ).xyzw;
+
+				const float wspatial = exp(-0.5 * (i*i+j*j) / (0.5*kernelSize*kernelSize) );
+
+				const float diffPos = distance(comparePos.xyz, centerPos.xyz);
+				const float wcoeff = exp(-0.5 * (diffPos*diffPos) / max(1e-16,distMaxPos*distMaxPos) );
+				
+				const float w = (inputVal.w == 0.0 || !weighting ? 1.0 : inputVal.w);
+
+				const float sampleWeight = wcoeff*wspatial*w;
+	
+				accum += inputVal*sampleWeight;
+				
+				weight += sampleWeight;
+			}
+		}
+	}
+
+	return vec4(accum.xyz / weight, weight);
+}
+
+vec4 getFilteredValueBilateralNormal(const ivec2 centerPx)
+{
+	const ivec2 tSize    = textureSize(inputTex, 0);
+
+	const int filterStep = (iteration==0) ? 2 : 1;
+
+	vec4 centerValPos = texelFetch( comparePosTex, centerPx, 0).xyzw;
+	vec4 centerValNor = texelFetch( compareNorTex, centerPx, 0).xyzw;
+
+	vec4  accum  = texelFetch( inputTex, centerPx, 0).xyzw;
+
+	if (accum.w == 0.0) return vec4(0.0); 
+
+	float weight = (accum.w == 0.0 || !weighting ? 1.0 : accum.w);
+	accum *= weight;
+
+	for( int j = -kernelSize; j <= kernelSize; j++ ) {
+		for( int i = -kernelSize; i <= kernelSize; i++ ) {
+			
+			if(i == 0 && j == 0) continue;
+
+			const ivec2 samplePx = centerPx + filterStep * ivec2(i,j);;
+
+			if( any(lessThan(samplePx,ivec2(0))) || any(greaterThan(samplePx,tSize-1)) ) continue;
+
+			vec4 comparePos = texelFetch( comparePosTex, samplePx, 0 ).xyzw;
+			vec4 compareNor = texelFetch( compareNorTex, samplePx, 0 ).xyzw;
+
+			if( compareNor.w != 0.0 )
+			{
+
+				const vec4 inputVal   = texelFetch( inputTex, samplePx, 0 ).xyzw;
+	
+				const float wspatial = exp(-0.5 * (i*i+j*j) / (4.0*4.0*kernelSize*kernelSize) );
+
+				const float diffPos = distance(comparePos.xyz, centerValPos.xyz);
+				const float wpos = exp(-0.5 * (diffPos*diffPos) / max(1e-16,distMaxPos*distMaxPos) );
+				
+				const float diffNor = normalDotComparison ? (1.0-dot(compareNor.xyz, centerValNor.xyz)) : distance(compareNor.xyz, centerValNor.xyz);
+				const float wnor = exp(-0.5 * (diffNor*diffNor) / max(1e-16,distMaxNor*distMaxNor) );
+			
+				float w = (inputVal.w == 0.0 || !weighting ? 1.0 : inputVal.w);
+
+				const float sampleWeight = wpos*wnor*wspatial*w;
+	
+				accum += inputVal*sampleWeight;
+				weight += sampleWeight;
+			}
+		}
+	}
+
+	return vec4(accum.xyz / weight, weight);
+}
+
+void main()
+{
+	ivec2 inputSize = ivec2(textureSize(inputTex, 0).xy);
+	ivec2 icoord = ivec2( gl_GlobalInvocationID );
+	 
+	if (any(greaterThanEqual(icoord, inputSize))) return;
+
+	vec4 value = vec4(0);
+
+	if (texelFetch( inputTex, icoord, 0).w != 0.0) {
+		value = normalFiltering ? getFilteredValueBilateralNormal(icoord) : getFilteredValueBilateral(icoord);
+
+		if (iteration==1) value.w = 1.0001;
+	}
+
+	imageStore(OutputTex, icoord, value);
+}

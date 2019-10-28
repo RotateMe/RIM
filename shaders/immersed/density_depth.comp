@@ -1,0 +1,54 @@
+#version 430 core
+#extension GL_ARB_compute_shader : require
+
+#define TILE_WIDTH 16
+#define TILE_HEIGHT 16
+
+#include "../Reusable/depth_to_geometry.glsl" 
+#include "../Reusable/linear_depth.glsl" 
+
+#ifdef GL_ARB_compute_variable_group_size
+#extension GL_ARB_compute_variable_group_size : enable
+	layout( local_size_variable ) in;
+#else
+	#define TILE_WIDTH 16
+	#define TILE_HEIGHT 16
+	layout( local_size_x = TILE_WIDTH, local_size_y = TILE_HEIGHT ) in;
+#endif
+
+layout (binding=0) writeonly uniform image2D OutputTex; // Output values
+
+uniform sampler2D   sceneDepthTex;       // Depth texture from scene
+uniform sampler2D   fluidFrontDepthTex;  // Front depth  texture from fluid
+uniform sampler2D   fluidBackDepthTex;   // Back depth texture from fluid
+uniform vec3  cameraPos;
+uniform float cameraNear;
+uniform float cameraFar;
+uniform float scale;
+
+void main()
+{
+	ivec2 inputSize = ivec2(textureSize(sceneDepthTex, 0).xy);
+	ivec2 icoord = ivec2( gl_GlobalInvocationID );
+	 
+	if (any(greaterThanEqual(icoord, inputSize))) return;
+
+	float sceneDepth = texelFetch( sceneDepthTex, icoord, 0).x;
+	float fluidFront = texelFetch( fluidFrontDepthTex, icoord, 0).x;
+	float fluidBack  = texelFetch( fluidBackDepthTex, icoord, 0).x;
+
+	float value = 0.0;
+
+	if (fluidFront < 1) {
+		float back = min(fluidBack, sceneDepth);
+		
+		float frontVS = linearizeDepthVS(fluidFront, cameraNear, cameraFar);
+		float backVS  = linearizeDepthVS(back, cameraNear, cameraFar);
+
+		value = clamp(backVS - frontVS, 0.001, 4.0);
+		value = pow(value*scale, 1.5) * 650;
+		 
+	}
+
+	imageStore(OutputTex, icoord, vec4(value, 0, 0, 1));
+}

@@ -1,0 +1,30 @@
+# Blender MTL File: 'None'
+# Material Count: 1
+
+newmtl Material.003
+Ns 96.078431
+Ka 1.000000 1.000000 1.000000
+Kd 0.640000 0.007343 0.016088
+Ks 0.500000 0.500000 0.500000
+Ke 0.000000 0.000000 0.000000
+Ni 1.000000
+d 1.000000
+illum 2
+
+#map_Kd wood.jpg
+#map_Ke wood-2.jpg 
+
+map_Kd floor.png
+map_Ke floor.png
+
+#map_Kd tilewall_05.jpg
+#map_Ke tilewall_05n.jpg
+#map_bump tilewall_05n.jpg
+
+#map_Kd Rocks-albedo.png
+#map_Ke Rocks-normal.png
+#map_bump Rocks-normal.png
+
+#map_Kd tilewall_06.jpg
+#map_Ke tilewall_06n.jpg
+#map_bump tilewall_06n.jpg

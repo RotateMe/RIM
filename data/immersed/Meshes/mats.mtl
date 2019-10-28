@@ -1,0 +1,59 @@
+newmtl ometal
+Ka 0.1 0.1 0.1
+Kd 0.97 0.308 0.023
+Ks 0.1 0.1 0.1
+ke 0.2 0.7 0.1
+Ns 150.0000
+illum 1
+
+newmtl pmetal
+Ka 0.1 0.1 0.1
+Kd 0.4000 0.1 0.3
+Ks 0.1 0.1 0.1
+ke 0.2 0.7 0.1
+Ns 200.0000
+illum 1
+
+newmtl silver
+Ka 0.1 0.1 0.1
+Kd 0.4 0.4 0.4
+Ks 0.1 0.1 0.1
+ke 0.2 0.7 0.1
+Ns 200.0000
+illum 1
+
+newmtl softred
+Ka 0.3 0.3 0.3
+Kd 0.9000 0.4 0.4
+Ks 0 0 0
+ke 0.6 1 0
+Ns 200.0000
+illum 1
+d 0.20000
+Tr 0.80000
+
+newmtl softblue
+Ka 0.3 0.3 0.3
+Kd 0.4 0.4 0.9
+Ks 0 0 0
+ke 0.6 1 0
+Ns 200.0000
+illum 1
+
+newmtl softgreen
+Ka 0.3 0.3 0.3
+Kd 0.4 0.9 0.4
+Ks 0 0 0
+ke 0.6 1 0
+Ns 200.0000
+illum 1
+
+newmtl difred
+Ka 0.3 0.3 0.3
+Kd 0.9000 0.4 0.4
+Ks 0 0 0
+ke 0.7 0.2 0.1
+Ns 200.0000
+illum 1
+d 0.20000
+Tr 0.80000

@@ -1,0 +1,366 @@
+#version 430 core
+#extension GL_ARB_compute_shader : require
+
+#define TILE_WIDTH 16
+#define TILE_HEIGHT 16
+
+#include "../reusable/depth_to_geometry.glsl" 
+#include "../reusable/linear_depth.glsl" 
+#include "../reusable/environment.glsl"
+
+#ifdef GL_ARB_compute_variable_group_size
+#extension GL_ARB_compute_variable_group_size : enable
+	layout( local_size_variable ) in;
+#else
+	#define TILE_WIDTH 16
+	#define TILE_HEIGHT 16
+	layout( local_size_x = TILE_WIDTH, local_size_y = TILE_HEIGHT ) in;
+#endif
+
+layout (binding=0) writeonly uniform image2D OutputTex; // Output color 
+
+uniform sampler2D   sceneDepthTex;       // Original depth texture
+uniform sampler2D   sceneColorTex;       // Original color texture
+uniform sampler2D   depthTex;           // Fluid surface depth
+uniform sampler2D   backDepthTex;       // Fluid back surface depth
+uniform sampler2D   normalTex;          // Fluid surface normal
+uniform sampler2D   geometryTex;        // Fluid geometry values
+uniform sampler2D   densityTex;         // Fluid density
+uniform sampler2D   envTex;             // Environment map equirectangular
+uniform samplerCube envCubeTex;             // Environment map cube
+
+uniform vec3  cameraPos;
+uniform float cameraNear;
+uniform float cameraFar;
+uniform vec4  waterColor;
+uniform float scale = 1.0;
+uniform float normalSmoothing = 0.0;
+uniform bool  enableScreenSpaceRefractions = true;
+uniform float refractionIndex = 1.333;
+uniform float densityThreshold = 0.5;
+uniform bool  normalFiltering;
+
+uniform float reflectionMult   = 1.0;
+uniform float reflectionGamma  = 1.0;
+
+uniform float refractionMult   = 1.0;
+uniform float refractionGamma  = 1.0;
+
+uniform mat4 vMatrix;
+uniform mat4 pMatrix;
+
+uniform mat4 pMatrixInv;
+uniform mat4 vMatrixInv;
+
+const mat4 vpMatrix = pMatrix * vMatrix;
+
+uniform float flatColorMix = 0.0;
+
+const float envMapMipmap = 1.5;
+
+vec3 getEnvColor(vec3 dir)
+{
+	return textureLod(envTex, mapViewToEquirectTexCoord(dir), envMapMipmap).rgb;	
+}
+
+float getFilteredValue(in sampler2D s, vec2 t, float f, float mipmapBias)
+{
+#define _VAL 3
+	float m[_VAL];
+	for (int i = 0; i < _VAL; ++i) m[i] = textureLod(s, t, i + mipmapBias).x;
+	float v = m[_VAL-1];
+	for (int i = _VAL-2; i >= 0; --i) v = mix(v, m[i], f);
+	return v;
+#undef _VAL
+}
+
+vec3 getFilteredNormal(in sampler2D s, vec2 t, float f, float mipmapBias)
+{
+#define _NVAL 5
+	vec3 m[_NVAL];
+	for (int i = 0; i < _NVAL; ++i) m[i] = textureLod(s, t, i + mipmapBias).xyz;
+	vec3 v = m[0];
+	for (int i = 1; i < _NVAL; ++i) v = (mix(v, m[i], f));
+	return normalize(v);
+#undef _NVAL
+}
+
+vec2 ssCoords2(mat4 vpMatrix, vec3 ws)
+{
+	vec4 ndc = vpMatrix * vec4(ws,1.0);
+	return (ndc.xy/ndc.w) * 0.5 + 0.5;
+}
+
+vec3 ssCoords3(mat4 vpMatrix, vec3 ws, bool linearize)
+{
+	vec4 ndc = vpMatrix * vec4(ws,1.0);
+	vec3 ssc = (ndc.xyz/ndc.w) * 0.5 + 0.5;
+	if (linearize) ssc.z = linearizeDepth(ssc.z, cameraNear, cameraFar);
+	return ssc;
+}
+
+vec3 ssCoords3(mat4 vpMatrix, vec3 ws)
+{
+	return ssCoords3(vpMatrix, ws, false);
+}
+
+vec3 getScreenSpaceValue(const vec2 texCoord, const vec3 wsPos, const vec3 wsDir, const bool refraction)
+{
+
+	bool pixelFound = false;
+	bool pixelIntersection = false;
+	vec2 pixelCoord = vec2(0,0);
+
+	// Exploration in world space 
+	const float stepSize = scale * 0.1;
+	const float stepPow  = 2;
+	float lastDepth = 0;
+	vec3  lastScenePos = vec3(0);
+	vec3  lastSceneNor = vec3(0);
+	vec2  lastCoord = vec2(0);
+	vec3  lastPos = wsPos;
+	bool  exited = false;
+
+	const float furthestDiff = 0.00025;
+	float closestDiff = furthestDiff;
+
+	int skips = 0;
+
+	// Ray march while sampling depth
+	for (int i = 0; i < 256; ++i)
+	{
+		vec3 samplePos   = wsPos.xyz + wsDir.xyz * stepSize * pow(i,stepPow);
+
+		vec4 sampleCoord = (pMatrix * vMatrix * vec4(samplePos, 1)); 
+		sampleCoord.xyz /= sampleCoord.w;
+		sampleCoord.xyz = sampleCoord.xyz * 0.5 + 0.5;
+
+		if (distance(sampleCoord.xy, lastCoord.xy) < 0.0001 && skips < 15) {
+			skips++;
+			continue;
+		}
+		skips = 0;
+
+		// Exit if we are out of the screen
+		if ( any(lessThanEqual(sampleCoord.xy, vec2(0.0))) || any(greaterThanEqual(sampleCoord.xy, vec2(1.0))) ) break;
+
+		float sceneDepth   = textureLod(sceneDepthTex, sampleCoord.xy, 0).x;
+		if (sceneDepth >= 1.0) continue;
+
+		vec3 scenePos, sceneNor;
+		geomFromDepth(sceneDepthTex, sampleCoord.xy, vMatrixInv, pMatrixInv, scenePos, sceneNor);
+
+		vec3 camDir = normalize(scenePos - cameraPos);
+		if (refraction) sceneNor = mix(sceneNor, camDir, 0.01 );
+
+		float sampleDepth  = sampleCoord.z; 
+
+		sampleDepth = linearizeDepth(sampleDepth, cameraNear, cameraFar);
+		sceneDepth  = linearizeDepth(sceneDepth, cameraNear, cameraFar);
+
+		if (distance(sampleCoord.xy, lastCoord.xy) < 1e-9) {
+			pixelCoord = sampleCoord.xy;
+			if (sceneDepth < 1.0) pixelFound = true;
+			break;
+		}
+
+		if (dot(sceneNor, (samplePos-scenePos)) < 0)
+		{ 
+			
+			float stepDepthDiff = max(1e-9, distance(sampleDepth, lastDepth));
+
+			// If we go through an object (scene depth is between last and current sample depth)
+			if (dot(sceneNor, (samplePos-scenePos)) * dot(sceneNor, (lastPos-scenePos)) < 0 && 
+				dot(lastSceneNor, (samplePos-lastScenePos)) * dot(lastSceneNor, (lastPos-lastScenePos)) < 0) {
+				pixelFound = true;
+				pixelIntersection = true;
+				pixelCoord = mix(lastCoord.xy, sampleCoord.xy, (sceneDepth - lastDepth) / stepDepthDiff);
+
+			// If we go behind an object (scene depth less than last and current sample depth)
+			} else if (!pixelFound && dot(sceneNor, (samplePos-scenePos)) < 0 && sampleDepth - sceneDepth > 0 && sampleDepth - sceneDepth < closestDiff) {
+
+				// Go back to pixel where the sampleDepth equals sceneDepth at this pixel, 
+				//     save it as potential pixelCoord, but keep iterating in case we find a correct intersection
+				vec2 lastCoordDir = (lastCoord.xy - sampleCoord.xy);
+				pixelCoord = sampleCoord.xy - lastCoordDir * (sceneDepth - sampleDepth) / stepDepthDiff;
+				closestDiff = sampleDepth - sceneDepth;
+
+				pixelFound = true;
+
+			}
+		}
+
+		if (pixelIntersection) break;
+
+		lastScenePos = scenePos;
+		lastSceneNor = sceneNor;
+		lastDepth = sampleDepth;
+		lastCoord = sampleCoord.xy;
+		lastPos = samplePos;
+	}
+
+	vec3 outputColor = getEnvColor(wsDir);
+
+	if (pixelFound)
+	{
+		vec3 ssColor = vec3(0);
+
+		if (distance(pixelCoord, texCoord) > 1e-9) {
+
+			const int s = pixelIntersection ? 2 : 2;
+			vec2 ssDir = normalize(pixelCoord - texCoord) / (2 * length(textureSize(sceneColorTex, 0).xy));
+			for (int j = -s; j <= s; ++j)
+			{
+				vec2 newCoord  = pixelCoord + ssDir.xy * (j);
+				ssColor += textureLod(sceneColorTex, newCoord.xy, 1.0+abs(s)/2.0).rgb;
+			}
+			ssColor = ssColor / (2*s+1);
+
+			if (!pixelIntersection && !refraction && false) 
+			{
+				ssColor = mix(ssColor, outputColor, exp(-closestDiff / furthestDiff));
+			}
+		} 
+
+		float edgeMix = 10 * min( min(abs(pixelCoord.x), abs(pixelCoord.y)) , min(abs(pixelCoord.x-1),abs(pixelCoord.x-1)) );
+		outputColor = mix(outputColor, ssColor, pow(clamp(edgeMix, 0.0, 1.0), 0.75));
+	} 
+
+	return outputColor;
+}
+
+float Schlick(float costheta)
+{
+	const float aN = refractionIndex;
+	const float wN = 1.0;
+	const float R0 = pow((aN-wN) / (aN+wN), 2);
+	return R0 + (1-R0) * pow(1.0-costheta, 5.0);
+}
+
+vec3 getNormal(vec2 texCoord, float mipmapLevel, float mult)
+{
+	vec4  wsPos = textureLod(geometryTex, texCoord, mipmapLevel);
+
+	if (wsPos.w < 1.0) {
+		mipmapLevel = 0.0;
+		mult = 1.0;
+		wsPos = textureLod(geometryTex, texCoord, mipmapLevel);
+		return vec3(0.0);
+	}
+
+	vec2 texStep = mult * exp2(mipmapLevel) / textureSize(geometryTex, 0).xy;
+	 
+	vec4  wsPosX_pos = textureLod(geometryTex, texCoord + vec2(texStep.x, 0), mipmapLevel);
+	vec4  wsPosY_pos = textureLod(geometryTex, texCoord + vec2(0, texStep.y), mipmapLevel);
+
+	vec4  wsPosX_neg = textureLod(geometryTex, texCoord - vec2(texStep.x, 0), mipmapLevel);
+	vec4  wsPosY_neg = textureLod(geometryTex, texCoord - vec2(0, texStep.y), mipmapLevel);
+ 
+	if (mipmapLevel > 0.0 && wsPosX_pos.w < 1.0 || wsPosX_neg.w < 1.0) return vec3(0.0);
+	if (mipmapLevel > 0.0 && wsPosY_pos.w < 1.0 || wsPosY_neg.w < 1.0) return vec3(0.0);
+
+	vec3 dxpos = wsPosX_pos.xyz - wsPos.xyz;
+	vec3 dypos = wsPosY_pos.xyz - wsPos.xyz;
+
+	vec3 dxneg = wsPos.xyz - wsPosX_neg.xyz;
+	vec3 dyneg = wsPos.xyz - wsPosY_neg.xyz; 
+
+	vec3 dx = wsPosX_neg.w < wsPosX_pos.w || dot(dxpos, dxpos) < dot (dxneg,dxneg) ? dxpos : dxneg;
+	vec3 dy = wsPosY_neg.w < wsPosY_pos.w || dot(dypos, dypos) < dot (dyneg,dyneg) ? dypos : dyneg;
+
+	vec3  normal = normalize(cross( (dx), (dy) ));
+
+	return normal;
+} 
+
+void main()
+{
+	ivec2 InputSize = ivec2(textureSize(sceneColorTex, 0).xy);          
+
+	ivec2 icoord = ivec2( gl_GlobalInvocationID.xy );
+	if (icoord.x >= InputSize.x || icoord.y >= InputSize.y) return;
+
+	vec2  texCoord = (icoord + 0.5) / InputSize;
+	
+	float depth     = textureLod(depthTex, texCoord, 0.0).x;
+	vec4  backColor = texelFetch(sceneColorTex, icoord, 0);
+	float backDepth = texelFetch(sceneDepthTex, icoord, 0).x;
+
+	float density         = textureLod(densityTex, texCoord, 0.0).x;
+	float densityFiltered = getFilteredValue(densityTex, texCoord, 0.1, 1.5).x; 
+
+	vec4 outputValue = backColor;
+
+	vec4 wsPos = vec4(wsFromDepth(depthTex, texCoord, vMatrixInv, pMatrixInv), 1.0);
+
+	wsPos.w           = textureLod(depthTex, texCoord, 0).x < 1.0 ? 1.0 : 0.0;
+
+	if (flatColorMix > 0.99) densityFiltered = densityThreshold + 1.0;
+
+	if (wsPos.w != 0.0 && densityFiltered > densityThreshold)
+	{
+
+		float normalSmoothBias = normalSmoothing;
+		normalSmoothBias *= pow(density*scale, 0.1); // Ad-hoc density-based smoothing (to show details in splashes)
+	
+		vec3 normal;
+
+		if (normalFiltering) {
+			normal = getFilteredNormal(normalTex, texCoord, normalSmoothBias, normalSmoothing).xyz; // Weighted taps at different levels
+		} else {
+			normal  = getNormal(texCoord, 0, 1);
+			if (normalSmoothing > 0) normal += getNormal(texCoord, 4*normalSmoothing, 1);
+		}
+
+
+		if (length(normal) > 0.0)
+		{
+			normal = normalize(normal);
+
+			vec3 viewDir = normalize(wsPos.xyz - cameraPos);
+
+			vec3 reflectionDir = normalize(reflect(viewDir, normal));
+			vec3 refractDir    = normalize(refract(viewDir, normal, 1.0/refractionIndex));
+
+			vec3 refractColor = vec3(0);
+			vec3 reflectColor = vec3(0);
+
+			if (enableScreenSpaceRefractions) {
+				reflectColor.xyz = getScreenSpaceValue(texCoord, wsPos.xyz, reflectionDir.xyz, false);
+				refractColor.xyz = getScreenSpaceValue(texCoord, wsPos.xyz, refractDir.xyz, true);
+			} else {
+				if (false && backDepth < 1.0) {
+					refractColor.xyz = 0.5 * (textureLod(sceneColorTex, texCoord, 1.5).rgb + textureLod(sceneColorTex, texCoord, 2.5).rgb);
+				} else {
+					refractColor.rgb = getEnvColor(refractDir);
+				}
+
+				reflectColor.rgb = getEnvColor(reflectionDir);
+			}
+	
+			outputValue.rgb = vec3(1.0);
+
+			// Refracted color attenuated by extinction
+			outputValue.rgb *= refractionMult * pow(refractColor.rgb, vec3(refractionGamma));
+
+			if (flatColorMix < 0.99) {
+				vec3 wColor = waterColor.xyz/max(waterColor.w, 0.00001);
+				vec3 extinction = exp(-densityFiltered/wColor);
+				outputValue.rgb *= mix(extinction, waterColor.rgb, flatColorMix) ;
+			} else {
+				outputValue.rgb *= waterColor.rgb;
+			}
+
+			// Add reflection according to fresnel effect approximation
+			const float cosTheta = pow(dot(-viewDir, normal), 1.0);
+			float fresnel = pow(Schlick(cosTheta), 0.75);
+			outputValue.rgb = mix(outputValue.rgb, reflectionMult*pow(reflectColor, vec3(reflectionGamma)), clamp(fresnel, 0, 1) );
+
+			// Small attenuation on low density regions
+			outputValue.rgb = mix(backColor.rgb, outputValue.rgb, pow(clamp(densityFiltered - densityThreshold, 0.01, 0.999), 0.25) );
+		}
+	}
+
+	imageStore(OutputTex, icoord, outputValue);
+
+}
