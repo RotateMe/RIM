@@ -31,9 +31,6 @@ bool CUDAMatrixVectorMultiplier::cublasLibInitialized = false;
 PD::PDScalar CUDAMatrixVectorMultiplier::cublasZero = 0.;
 cublasHandle_t CUDAMatrixVectorMultiplier::cublasLibHandle = 0;
 
-bool CUSparseMatrixVectorMultiplier::cusparseLibInitialized = false;
-cusparseHandle_t CUSparseMatrixVectorMultiplier::cusparseLibHandle = 0;
-
 CUDAMatrixVectorMultiplier::CUDAMatrixVectorMultiplier(PD::PDMatrix & mat)
 	:
 	m_multTime(10000, 10000),
@@ -221,94 +218,3 @@ void CUDAMatrixVectorMultiplier::setGLBuffer(GLuint bufferID)
 	m_glbufferId = bufferID;
 }
 #endif
-
-
-CUSparseMatrixVectorMultiplier::CUSparseMatrixVectorMultiplier(PD::PDSparseMatrix & mat)
-	: m_alpha(1.), m_zero(0.)
-{
-	if (!cusparseLibInitialized) {
-		cusparseCreate(&cusparseLibHandle);
-		cusparseLibInitialized = true;
-	}
-
-	m_N = mat.rows();
-	m_M = mat.cols();
-
-	if (cudaMalloc((void**)&m_cudaInVec, sizeof(PD::PDScalar)*m_M) != cudaError::cudaSuccess) {
-		std::cout << "Fatal error: Could not allocate memory for in-vector in CUDA" << std::endl;
-		return;
-	}
-	if (cudaMalloc((void**)&m_cudaOutVec, sizeof(PD::PDScalar)*m_N) != cudaError::cudaSuccess) {
-		std::cout << "Fatal error: Could not allocate memory for out-vector in CUDA" << std::endl;
-		return;
-	}
-
-	// Create the CSC data for the sparse matrix
-	m_nnz = mat.nonZeros();
-	PD::PDScalar* entries = new PD::PDScalar[m_nnz];
-	int* rowInds = new int[m_nnz];
-	int* colPtr = new int[m_M + 1];
-	unsigned int counter = 0;
-	colPtr[0] = 0;
-	for (int k = 0; k < mat.outerSize(); ++k) {
-		for (PD::PDSparseMatrix::InnerIterator it(mat, k); it; ++it)
-		{
-			entries[counter] = it.value();
-			rowInds[counter] = it.row();
-			counter++;
-		}
-		colPtr[k + 1] = counter;
-	}
-
-	// Upload the CSC data
-	if (cudaMalloc((void**)&m_cudaMatData, sizeof(PD::PDScalar)*m_nnz) != cudaError::cudaSuccess) {
-		std::cout << "Fatal error: Could not allocate memory for matrix entries in CUDA" << std::endl;
-		return;
-	}
-	else {
-		cudaMemcpy(m_cudaMatData, entries, sizeof(PD::PDScalar)*m_nnz, cudaMemcpyHostToDevice);
-	}
-	if (cudaMalloc((void**)&m_cudaRowInd, sizeof(int)*m_nnz) != cudaError::cudaSuccess) {
-		std::cout << "Fatal error: Could not allocate memory for row indices in CUDA" << std::endl;
-		return;
-	}
-	else {
-		cudaMemcpy(m_cudaRowInd, rowInds, sizeof(int)*m_nnz, cudaMemcpyHostToDevice);
-	}
-	if (cudaMalloc((void**)&m_cudaColPtr, sizeof(int)*(m_M + 1)) != cudaError::cudaSuccess) {
-		std::cout << "Fatal error: Could not allocate memory for row indices in CUDA" << std::endl;
-		return;
-	}
-	else {
-		cudaMemcpy(m_cudaColPtr, colPtr, sizeof(int)*(m_M + 1), cudaMemcpyHostToDevice);
-	}
-
-	// Set up description
-	cusparseCreateMatDescr(&m_desc);
-	cusparseSetMatType(m_desc, CUSPARSE_MATRIX_TYPE_GENERAL);
-	cusparseSetMatIndexBase(m_desc, CUSPARSE_INDEX_BASE_ZERO);
-}
-
-void CUSparseMatrixVectorMultiplier::mult(const void * inData, void * outData, PD::PDScalar & alpha)
-{
-
-	if (cublasSetVector(m_M, sizeof(PD::PDScalar), inData, 1, (void*)(m_cudaInVec), 1) != cublasStatus_t::CUBLAS_STATUS_SUCCESS) {
-		std::cout << "Fatal error: Could not set data for the in-vector with CUBLAS." << std::endl;
-	}
-
-	cudaMemcpy(m_cudaInVec, inData, sizeof(PD::PDScalar) * m_M, cudaMemcpyHostToDevice);
-
-	/*
-		NOTE:
-		We do NOT multiply with the transpose of the matrix that was passed to the constructor!!!
-		The reason that we set the operation to transpose is that cuSparse only offers a multiplication
-		for compressed sparse row (CSR) format type matrices, but the matrix mat is in compressed sparse
-		column (CSC) format.
-		However, using the CSC description of mat as a CSR description, leads to the transpose of mat.
-		Thus, multiplying with the transpose in CSR amounts to multiplying with the non-transposed in
-		CSC.
-	*/
-	cusparseDcsrmv(cusparseLibHandle, CUSPARSE_OPERATION_TRANSPOSE, m_M, m_N, m_nnz, &m_alpha, m_desc, m_cudaMatData, m_cudaColPtr, m_cudaRowInd, m_cudaInVec, &m_zero, m_cudaOutVec);
-
-	cudaMemcpy(outData, m_cudaOutVec, sizeof(PD::PDScalar) * m_N, cudaMemcpyDeviceToHost);
-}

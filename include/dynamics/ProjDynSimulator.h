@@ -531,7 +531,6 @@ namespace PD {
 		// CUDA stuff
 		CUDAMatrixVectorMultiplier* m_usedVertexUpdater;
 		CUDAMatrixVectorMultiplier* m_rhsEvaluator;
-		CUSparseMatrixVectorMultiplier* m_usedVertexUpdaterSparse;
 		PDMatrix m_projUsedVerts;
 		PDMatrix m_rhsEvalMat;
 		PDVector m_curTempVec;

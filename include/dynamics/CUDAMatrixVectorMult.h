@@ -47,7 +47,6 @@ SOFTWARE.
 #include <iostream>
 #include "cuda_gl_interop.h"
 #include "cublas_v2.h"
-#include "cusparse_v2.h"
 #include "ProjDynTypeDef.h"
 #include "StopWatch.h"
 
@@ -87,24 +86,4 @@ private:
 	StopWatch m_multTime;
 	StopWatch m_getTime;
 	StopWatch m_setTime;
-};
-
-class CUSparseMatrixVectorMultiplier {
-public:
-	CUSparseMatrixVectorMultiplier(PD::PDSparseMatrix& mat);
-	void mult(const void* inData, void* outData, PD::PDScalar& alpha);
-private:
-	static cusparseHandle_t cusparseLibHandle;
-	static bool cusparseLibInitialized;
-	int m_nnz;
-	PD::PDScalar* m_cudaInVec;
-	PD::PDScalar* m_cudaOutVec;
-	PD::PDScalar* m_cudaMatData;
-	cusparseMatDescr_t m_desc;
-	double m_alpha;
-	double m_zero;
-	int* m_cudaColPtr;
-	int* m_cudaRowInd;
-	/* m_M = number of cols, m_N = number of rows */
-	unsigned int m_M, m_N;
 };

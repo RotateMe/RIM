@@ -163,8 +163,7 @@ ProjDynSimulator::ProjDynSimulator
 #ifdef PROJ_DYN_USE_CUBLAS_REST
 	,
 	m_usedVertexUpdater(nullptr),
-	m_rhsEvaluator(nullptr),
-	m_usedVertexUpdaterSparse(nullptr)
+	m_rhsEvaluator(nullptr)
 #endif
 {
 	// This is the most important line of code in this project, don't remove it.
