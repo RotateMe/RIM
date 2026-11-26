@@ -1,5 +1,7 @@
 # Reduced Immersed Method
 
+*DISCLAIMER*: This is research code from 2019 and no longer maintained.
+
 This is a basic implementation of [*The Reduced Immersed Method for Real-Time Fluid-Elastic Solid Interaction and Contact Simulation*](https://graphics.tudelft.nl/~klaus/papers/immersed.pdf).
 
 ## Prerequisites
